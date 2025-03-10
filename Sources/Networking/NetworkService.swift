@@ -9,46 +9,17 @@ import Foundation
 
 public protocol NetworkServiceConfig: Sendable {
     var session: URLSession { get }
-    var cacheManager: CacheManager { get }
     var authManager: AuthManager { get }
-    var retryHandler: RetryHandler { get }
 }
 
 public struct DefaultNetworkServiceConfig: NetworkServiceConfig, Sendable {
     public var session: URLSession
-    public var cacheManager: CacheManager
     public var authManager: AuthManager
-    public var retryHandler: RetryHandler
     
     public init(session: URLSession,
-               cacheManager: CacheManager,
-               authManager: AuthManager,
-                retryHandler: RetryHandler) {
+               authManager: AuthManager) {
         self.session = session
-        self.cacheManager = cacheManager
         self.authManager = authManager
-        self.retryHandler = retryHandler
-    }
-    
-    public init() {
-        self.init(session: URLSession.shared,
-                  cacheManager: InMemoryCacheManager(),
-                  authManager: OathAuthManager(),
-                  retryHandler: BackoffMultiplierRetryHandler())
-    }
-    
-    public init(session: URLSession) {
-        self.init(session: session,
-                  cacheManager: InMemoryCacheManager(),
-                  authManager: OathAuthManager(),
-                  retryHandler: BackoffMultiplierRetryHandler())
-    }
-    
-    public init(cacheManager: CacheManager) {
-        self.init(session: URLSession.shared,
-                  cacheManager: cacheManager,
-                  authManager: OathAuthManager(),
-                  retryHandler: BackoffMultiplierRetryHandler())
     }
 }
 
@@ -58,25 +29,18 @@ public actor NetworkService {
     private let authManager: AuthManager
     private let retryHandler: RetryHandler
     
-    public init(config: NetworkServiceConfig = DefaultNetworkServiceConfig()) {
+    public init(config: NetworkServiceConfig) {
         self.session = config.session
-        self.cacheManager = config.cacheManager
+        self.cacheManager = CDCachingManager()
         self.authManager = config.authManager
-        self.retryHandler = config.retryHandler
+        self.retryHandler = BackoffMultiplierRetryHandler()
     }
     
     public func requestObject<T: Decodable>(request: Request) async throws -> T {
-        // Check cache first if needed
-        if request.cachePolicy.shouldCheckCache {
-            if let cached = await cacheManager.get(for: request.cacheKey) {
-                return try JSONDecoder().decode(T.self, from: cached)
-            }
-        }
-        
         return try await withCheckedThrowingContinuation { continuation in
             Task {
                 do {
-                    let data = try await execute(request)
+                    let data = try await requestData(request: request)
                     let object = try JSONDecoder().decode(T.self, from: data)
                     continuation.resume(returning: object)
                 } catch {
@@ -87,13 +51,20 @@ public actor NetworkService {
     }
     
     public func requestData(request: Request) async throws -> Data {
-        // Check cache first if needed
-        if request.cachePolicy.shouldCheckCache {
-            if let cached = await cacheManager.get(for: request.cacheKey) {
-                return cached
+        switch request.cachePolicy {
+        case .reloadIgnoringLocalCacheData:
+            return try await execute(request)
+        case .returnCacheDataElseLoad:
+            if let cached = await cacheManager.get(for: request.cacheKey), cached.cacheValid {
+                return cached.data
             }
+            return try await execute(request)
+        case .returnCacheDataDontLoad:
+            if let cached = await cacheManager.get(for: request.cacheKey) {
+                return cached.data
+            }
+            return try await execute(request)
         }
-        return try await execute(request)
     }
     
     private func execute(_ request: Request) async throws -> Data {
@@ -125,7 +96,11 @@ public actor NetworkService {
             
             // Update cache
             if request.cachePolicy.shouldCache {
-                await self.cacheManager.save(data, for: request.cacheKey)
+                let ttl: TimeInterval? = request.cachePolicy.ttl != nil
+                    ? request.cachePolicy.ttl! + Date().timeIntervalSince1970
+                    : nil
+                let metadata = CacheMetadata(data: data, ttl: ttl)
+                await self.cacheManager.save(metadata, for: request.cacheKey)
             }
             
             return data

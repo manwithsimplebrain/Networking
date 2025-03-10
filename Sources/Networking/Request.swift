@@ -8,13 +8,13 @@
 import Foundation
 
 public struct Request: Sendable {
-    let url: URL
-    let method: HTTPMethod
-    let headers: [String: String]
-    let queryItems: [String: String]
-    let body: Data?
-    let cachePolicy: CachePolicy
-    let retryPolicy: RetryPolicy
+    public let url: URL
+    public let method: HTTPMethod
+    public let headers: [String: String]
+    public let queryItems: [String: String]
+    public let body: Data?
+    public let cachePolicy: CachePolicy
+    public let retryPolicy: RetryPolicy
     
     public init(
         url: URL,
@@ -22,7 +22,7 @@ public struct Request: Sendable {
         headers: [String : String] = [:],
         queryItems: [String: String] = [:],
         body: Data? = nil,
-        cachePolicy: CachePolicy = .memory,
+        cachePolicy: CachePolicy = .reloadIgnoringLocalCacheData,
         retryPolicy: RetryPolicy = .default) {
         self.url = url
         self.method = method
@@ -39,33 +39,33 @@ public struct Request: Sendable {
 }
 
 public enum CachePolicy: Sendable {
-    case network
-    case memory
-    case disk
+    case reloadIgnoringLocalCacheData
+    case returnCacheDataElseLoad(ttl: TimeInterval)
+    case returnCacheDataDontLoad
     
-    var shouldCheckCache: Bool {
+    var shouldCache: Bool {
         switch self {
-        case .network:
+        case .reloadIgnoringLocalCacheData:
             return false
-        case .disk, .memory:
+        case .returnCacheDataElseLoad, .returnCacheDataDontLoad:
             return true
         }
     }
     
-    var shouldCache: Bool {
+    var ttl: TimeInterval? {
         switch self {
-        case .network:
-            return false
-        case .memory, .disk:
-            return true
+        case .reloadIgnoringLocalCacheData, .returnCacheDataDontLoad:
+            return nil
+        case .returnCacheDataElseLoad(let ttl):
+            return ttl
         }
     }
 }
 
 public struct RetryPolicy: Sendable {
-    let maxRetries: Int
-    let delay: TimeInterval
-    let backoffMultiplier: Double
+    public let maxRetries: Int
+    public let delay: TimeInterval
+    public let backoffMultiplier: Double
     
     public static let `default` = RetryPolicy(
         maxRetries: 3,
